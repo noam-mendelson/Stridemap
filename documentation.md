@@ -1,59 +1,69 @@
 # Web Application Project Documentation
-## 1. Sridemap Overview
-### Motivation
-- What problem does this web application solve?
-StrideMap was developed to solve a practical yet often overlooked problem: *the difficulty of planning outdoor running or walking routes that meet specific distance and elevation goals*. Existing tools like Strava and Google Maps either rely on manually drawn paths or provide limited route suggestions, often without real-time feedback on terrain or elevation. For users with structured training goals—such as hill intervals, distance progression, or taper runs—this lack of control can lead to inefficient and frustrating planning.
 
+## 1. StrideMap Overview
 
-- Why is this application useful in a real-world scenario?
-The motivation for this application was personal: while preparing for a 25 km hilly trail run, I found that even with access to varied terrain, it was surprisingly difficult to generate outdoor routes that matched my training program's elevation and distance requirements. This experience highlighted the need for a system that supports *custom, terrain-aware, goal-driven route planning*.
+### Motivation  
+**What problem does this web application solve?**  
+StrideMap addresses *the difficulty of planning outdoor running or walking routes that meet specific distance and elevation goals*. Existing tools (e.g., Strava, Google Maps) either rely on manually drawn paths or provide limited suggestions without real-time feedback on terrain. For structured training—hill intervals, distance progression, taper runs—this lack of control leads to inefficient, frustrating planning.
 
-### Web Application Functions
-StrideMap is a web-based application with the following key functionalities:
+**Why is this application useful in a real-world scenario?**  
+While preparing for a 25 km hilly trail run, I discovered how hard it was to generate outdoor routes matching both elevation and distance requirements. StrideMap fills this gap by supporting *custom, terrain-aware, goal-driven route planning* that lets users specify:
 
-- **Custom Route Generation**  
-  Users can request loop or point-to-point routes that match specific distance and elevation criteria. The backend generates multiple candidates and returns the best route based on a multi-dimensional scoring system.
+- Start / end locations  
+- Target distance  
+- Desired elevation gain  
+- Terrain preference (via walkable-path filtering)
 
-- **Interactive Mapping**  
-  A Leaflet map displays the generated route, with elevation visualised as a colour gradient along the path. Start and end markers are clearly highlighted.
-
-- **User Input Controls**  
-  A sidebar allows users to input start/end locations, set a target distance, and choose elevation preferences (e.g. prioritise distance, elevation, or balance both).
-
-- **Real-Time Statistics**  
-  Once a route is generated, the frontend displays its total distance, elevation gain, and estimated duration.
-
-- **Geocoding Support**  
-  Users can type in place names, which are geocoded using OSM’s `planet_osm_point` data and snapped to the nearest walkable node.
+By integrating spatial (lat/long), topographic (elevation), and network-connectivity data, StrideMap performs *real-time, multi-criteria* route generation that adapts to the user’s goals.
 
 ---
 
-**Describe how high-dimensional queries are used in the application:**
+### Web Application Functions  
 
-StrideMap performs high-dimensional queries that combine *geospatial*, *graph*, and *elevation* dimensions. Specifically:
-- **Spatial Filtering**: Paths are filtered to include only pedestrian-friendly segments using OSM tags.
-- **Network Graph Traversal**: Routes are generated via pgRouting (for shortest paths) or custom heuristic searches (for loop and elevation-aware routing).
-- **Elevation Matching**: Each node’s location is joined with DEM raster data to extract elevation via spatial joins.
-- **Multi-Criteria Scoring**: Candidate routes are evaluated based on how closely they match the target distance and elevation, with dynamic tolerance adjustment depending on route length.
+- **Custom Route Generation**  
+  Loop or point-to-point routes that match user-defined distance and elevation constraints, selected via a multi-dimensional scoring system.
 
-These dimensions are integrated in real-time to support *interactive, user-driven route planning*, demonstrating the power of spatial databases in high-dimensional querying scenarios.
+- **Interactive Mapping**  
+  Leaflet map with the route polylined in an elevation-gradient colour scheme; distinct start/end markers.
 
+- **User Input Controls**  
+  Sidebar form for start/end locations, distance target, and elevation priority (distance-first, elevation-first, or balanced).
 
-## Queries Implemented
+- **Real-Time Statistics**  
+  Displays total distance, elevation gain, and estimated duration as soon as a route is generated.
 
-### Query 1: Nearest Node Snap  
-**Task Description:**  
-Snap user-entered coordinates to the nearest walkable network node. This ensures that routing starts and ends at valid, connected locations within the main graph component. This is a core function of any route generation request.
+- **Geocoding Support**  
+  Place names are geocoded via `planet_osm_point` and snapped to the nearest walkable node.
 
-**Real-World Application:**  
-When a user selects a location or enters a place name, it must be aligned with a node in the graph for routing algorithms to work correctly.
+---
 
-**SQL Query:**
+### High-Dimensional Query Usage
+
+StrideMap combines **geospatial**, **graph**, and **elevation** dimensions in every route request:
+
+| Dimension             | Operation                                                                  |
+|-----------------------|-----------------------------------------------------------------------------|
+| Spatial Filtering     | Exclude non-pedestrian segments using `highway` tags.                       |
+| Network Traversal     | Use pgRouting Dijkstra / custom heuristic search to explore the graph.      |
+| Elevation Matching    | Join each node to the DEM raster (`ST_DWithin` + `ST_Value`).               |
+| Multi-Criteria Scoring| Weight distance and elevation deviations with dynamic tolerances.           |
+
+These integrated queries power *interactive, user-driven* route planning while demonstrating spatial-database efficacy for high-dimensional data problems.
+
+---
+
+## 5. Queries Implemented
+
+### Query 1 – Nearest Node Snap  
+**Task:** Snap user-entered coordinates to the nearest walkable network node. This ensures that routing starts and ends at valid, connected locations within the main graph component. This is a core function of any route generation request.
+**Real-World Use:** When a user selects a location or enters a place name, it must be aligned with a node in the graph for routing algorithms to work correctly.
+
 ```sql
 SELECT id
 FROM walkable_ways_vertices_pgr
 ORDER BY the_geom <-> ST_SetSRID(ST_MakePoint(:lng, :lat), 4326)
 LIMIT 1;
+
 ```
 
 **Explanation of Variables:**
@@ -65,15 +75,10 @@ LIMIT 1;
 - If no node is found within a reasonable bounding box, the system returns a frontend error prompting the user to adjust location.
 - Coordinates outside the map bounds are caught by input validation.
 
-### Query 2: Shortest Point-to-Point Route (Dijkstra)
+### Query 2 – Shortest Point-to-Point Route (Dijkstra)  
+**Task:** Return the shortest walkable path between two snapped nodes using pgRouting.  
+**Real-World Use:** Used for generating direct routes between different start and end points.
 
-**Task Description:**  
-Return the shortest walkable path between two snapped nodes using pgRouting.
-
-**Real-World Application:**  
-Used for generating direct routes between different start and end points.
-
-**SQL Query:**
 ```sql
 SELECT * FROM pgr_dijkstra(
   'SELECT id, source, target, cost, reverse_cost FROM walkable_ways_main',
@@ -88,15 +93,12 @@ SELECT * FROM pgr_dijkstra(
 **Unexpected Value Handling:**
 - If no path is found (e.g. due to disconnected components), the backend falls back to an alternative strategy or returns a user-facing warning.
 
-### Query 3: Elevation Join (DEM Raster)
+---
 
-**Task Description:**  
-Assign elevation values to route points using a spatial join with the raster DEM layer.
+### Query 3 – Elevation Join (DEM Raster)  
+**Task:** Assign elevation values to route points using a spatial join with the raster DEM layer.  
+**Real-World Use:** Enables elevation-aware route scoring, elevation profile construction, and elevation gain calculation.
 
-**Real-World Application:**  
-Enables elevation-aware route scoring, elevation profile construction, and elevation gain calculation.
-
-**SQL Query:**
 ```sql
 SELECT rp.seq, ST_X(rp.geom) AS lon, ST_Y(rp.geom) AS lat, ner.elevation
 FROM (
@@ -115,52 +117,49 @@ LEFT JOIN node_elevation_raster ner
 **Unexpected Value Handling:**
 - If no elevation is found for a point, a fallback elevation of 0 or null is assigned. These are filtered or smoothed in post-processing to prevent elevation "spikes."
 
-### Query 4: Loop Route Generation
+---
 
-**Task Description:**  
-Generate a loop route that starts and ends at the same point, with a target distance and optional elevation constraints.
+### Query 4 – Loop Route Generation (Multi-Dimensional Optimisation)  
+**Task:** Generate a loop route that starts and ends at the same point, with a target distance and optional elevation constraints.  
+**Real-World Use:** Used when users want to run a loop route from a single location, common for training runs.
 
-**Real-World Application:**  
-Used when users want to run a loop route from a single location, common for training runs.
-
-**SQL Query:**
 ```sql
 WITH RECURSIVE loop_candidates AS (
   SELECT 
     path,
-    ST_Length(ST_Transform(ST_Collect(way), 3857)) as length,
+    ST_Length(ST_Transform(ST_Collect(way), 3857)) as length_m,
     SUM(CASE 
       WHEN e2.elevation > e1.elevation 
       THEN e2.elevation - e1.elevation 
       ELSE 0 
-    END) as elevation_gain
+    END) as elev_gain
   FROM pgr_ksp(
     'SELECT id, source, target, cost, reverse_cost FROM walkable_ways_main',
     :start_node, :start_node, 3, false
   ) r
   JOIN walkable_ways_main w ON r.edge = w.id
-  JOIN node_elevation_raster e1 ON w.source = e1.id
-  JOIN node_elevation_raster e2 ON w.target = e2.id
+  JOIN walkable_ways_vertices_pgr e1 ON w.source = e1.id
+  JOIN walkable_ways_vertices_pgr e2 ON w.target = e2.id
   GROUP BY path
 )
 SELECT *
 FROM loop_candidates
 WHERE 
-  length BETWEEN :min_distance AND :max_distance
-  AND elevation_gain BETWEEN :min_elevation AND :max_elevation
+  length_m BETWEEN :min_dist AND :max_dist
+  AND elev_gain BETWEEN :min_elev AND :max_elev
 ORDER BY 
-  ABS(length - :target_distance) + 
-  ABS(elevation_gain - :target_elevation)
+  ABS(length_m - :target_dist) + 
+  ABS(elev_gain - :target_elev)
 LIMIT 1;
 ```
 
 **Explanation of Variables:**
-- `:start_node`: Node ID to start/end the loop
-- `:min_distance`, `:max_distance`: Acceptable distance range
-- `:min_elevation`, `:max_elevation`: Acceptable elevation gain range
-- `:target_distance`, `:target_elevation`: Ideal distance and elevation
+- `:start_node`: Node ID to start/end the loop.
+- `:min_dist`, `:max_dist`: Acceptable distance range.
+- `:min_elev`, `:max_elev`: Acceptable elevation gain range.
+- `:target_dist`, `:target_elev`: Ideal distance and elevation for scoring.
 
 **Unexpected Value Handling:**
-- If no suitable loop is found, falls back to out-and-back route generation
-- Handles disconnected components by checking main graph membership
-- Implements dynamic tolerance based on route length
+- If no suitable loop is found, the backend falls back to out-and-back route generation.
+- Handles disconnected components by checking main graph membership.
+- Implements dynamic tolerance based on route length.
